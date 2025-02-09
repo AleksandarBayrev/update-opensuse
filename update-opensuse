@@ -1,0 +1,15 @@
+#!/bin/bash
+distroCheck=`cat /etc/os-release | grep -i "NAME=\"openSUSE Tumbleweed\""`
+if [[ -z $distroCheck ]]
+then
+    echo "Distribution is not openSUSE Tumbleweed, exiting..."
+    exit 0
+fi
+echo 'Performing system update'
+sudo zypper refresh
+sudo zypper dup
+if [ -x /usr/bin/flatpak ]
+then
+    echo 'Performing flatpaks update'
+    flatpak update -y
+fi
