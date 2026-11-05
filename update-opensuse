@@ -1,15 +1,177 @@
-#!/bin/bash
-distroCheck=`cat /etc/os-release | grep -i "NAME=\"openSUSE Tumbleweed\""`
-if [[ -z $distroCheck ]]
-then
-    echo "Distribution is not openSUSE Tumbleweed, exiting..."
+#!/usr/bin/env bash
+# Update openSUSE Tumbleweed and MicroOS systems.
+# Supports regular and transactional installations.
+
+set -Eeuo pipefail
+
+usage() {
+    echo "Usage: update-opensuse {check|upgrade}"
+    echo ""
+    echo "Options:"
+    echo "  check   : Check system and Flatpak updates without installing."
+    echo "  upgrade : Install/stage updates and prompt to reboot."
+    exit 1
+}
+
+error() {
+    echo "Error: $*" >&2
+    exit 1
+}
+
+info() {
+    echo ""
+    echo "==> $*"
+}
+
+# Validate arguments.
+[[ $# -eq 1 ]] || usage
+
+COMMAND="$1"
+
+[[ "$COMMAND" == "check" || "$COMMAND" == "upgrade" ]] || usage
+
+# Require root privileges.
+if [[ "$(id -u)" -ne 0 ]]; then
+    error "Run as root: sudo update-opensuse $COMMAND"
+fi
+
+# Identify distribution.
+[[ -f /etc/os-release ]] || error "Cannot identify distribution."
+
+source /etc/os-release
+
+case "${ID:-}" in
+    opensuse-tumbleweed)
+        DISTRO="Tumbleweed"
+        ;;
+    opensuse-microos)
+        DISTRO="MicroOS"
+        ;;
+    *)
+        error "Unsupported distribution: ${PRETTY_NAME:-Unknown}"
+        ;;
+esac
+
+# Detect transactional systems.
+IS_TRANSACTIONAL=false
+
+if [[ "$DISTRO" == "MicroOS" ]]; then
+    IS_TRANSACTIONAL=true
+elif command -v transactional-update >/dev/null 2>&1; then
+    # Also support transactional Tumbleweed installations.
+    if findmnt -no OPTIONS / | tr ',' '\n' | grep -qx ro; then
+        IS_TRANSACTIONAL=true
+    fi
+fi
+
+if [[ "$IS_TRANSACTIONAL" == true ]]; then
+    command -v transactional-update >/dev/null 2>&1 ||
+        error "transactional-update is not installed."
+fi
+
+command -v zypper >/dev/null 2>&1 ||
+    error "zypper is not installed."
+
+# Identify the user who invoked sudo.
+FLATPAK_USER="${SUDO_USER:-}"
+
+if [[ "$FLATPAK_USER" == "root" ]]; then
+    FLATPAK_USER=""
+fi
+
+# Run Flatpak commands for the invoking user.
+user_flatpak() {
+    runuser -u "$FLATPAK_USER" -- flatpak --user "$@"
+}
+
+# Check both Flatpak installation scopes.
+check_flatpaks() {
+    command -v flatpak >/dev/null 2>&1 || return 0
+
+    info "Checking system-wide Flatpak updates..."
+    flatpak --system remote-ls --updates
+
+    if [[ -n "$FLATPAK_USER" ]]; then
+        info "Checking Flatpak updates for $FLATPAK_USER..."
+        user_flatpak remote-ls --updates
+    fi
+}
+
+# Upgrade both Flatpak installation scopes.
+upgrade_flatpaks() {
+    command -v flatpak >/dev/null 2>&1 || return 0
+
+    info "Updating system-wide Flatpaks..."
+    flatpak --system update -y
+
+    if [[ -n "$FLATPAK_USER" ]]; then
+        info "Updating Flatpaks for $FLATPAK_USER..."
+        user_flatpak update -y
+    fi
+}
+
+# Check system updates without modifying installed packages.
+check_system() {
+    info "Refreshing repository metadata..."
+    zypper --non-interactive refresh
+
+    info "Checking distribution updates..."
+    zypper --non-interactive dup --dry-run
+}
+
+# Upgrade the host.
+upgrade_system() {
+    if [[ "$IS_TRANSACTIONAL" == true ]]; then
+        info "Updating transactional system..."
+
+        # Continue from the default snapshot so already-staged
+        # changes are retained if a reboot is still pending.
+        transactional-update --continue dup
+    else
+        info "Updating regular Tumbleweed..."
+
+        zypper --non-interactive refresh
+        zypper --non-interactive dup
+    fi
+}
+
+# Print detected configuration.
+echo "Distribution : $DISTRO"
+echo "Transactional: $IS_TRANSACTIONAL"
+echo "Mode         : $COMMAND"
+
+# CHECK
+if [[ "$COMMAND" == "check" ]]; then
+    check_system
+    check_flatpaks
+
+    info "Update check complete."
+    echo "Run 'sudo update-opensuse upgrade' to upgrade."
     exit 0
 fi
-echo 'Performing system update'
-sudo zypper refresh
-sudo zypper dup
-if [ -x /usr/bin/flatpak ]
-then
-    echo 'Performing flatpaks update'
-    flatpak update -y
+
+# UPGRADE
+upgrade_system
+
+info "System upgrade completed successfully."
+
+upgrade_flatpaks
+
+info "Update process completed."
+
+if [[ "$IS_TRANSACTIONAL" == true ]]; then
+    echo "System changes will become active after reboot."
+else
+    echo "System packages have been updated."
+    echo "A reboot is recommended to load the latest kernel and services."
+fi
+
+echo ""
+read -r -p "Do you want to reboot now? [y/N] " response
+
+if [[ "$response" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+    info "Rebooting..."
+    systemctl reboot
+else
+    echo "Reboot skipped."
 fi
