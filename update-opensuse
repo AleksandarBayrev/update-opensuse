@@ -32,7 +32,7 @@ COMMAND="$1"
 
 # Require root privileges.
 if [[ "$(id -u)" -ne 0 ]]; then
-    error "Run as root: sudo update-opensuse $COMMAND"
+    error "Run as root: sudo /usr/local/bin/update-opensuse $COMMAND"
 fi
 
 # Identify distribution.
@@ -146,7 +146,12 @@ if [[ "$COMMAND" == "check" ]]; then
     check_flatpaks
 
     info "Update check complete."
-    echo "Run 'sudo update-opensuse upgrade' to upgrade."
+    if [[ "$DISTRO" == "MicroOS" ]]; then
+        # The Makefile installs this sudo alias in the invoking user's ~/.alias.
+        echo "Run 'update-opensuse upgrade' to upgrade."
+    else
+        echo "Run 'sudo /usr/local/bin/update-opensuse upgrade' to upgrade."
+    fi
     exit 0
 fi
 
