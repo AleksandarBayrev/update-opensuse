@@ -113,10 +113,10 @@ upgrade_flatpaks() {
 # Check system updates without modifying installed packages.
 check_system() {
     info "Refreshing repository metadata..."
-    zypper --non-interactive refresh
+    zypper refresh
 
     info "Checking distribution updates..."
-    zypper --non-interactive dup --dry-run --details
+    zypper dup --dry-run --details
 }
 
 # Upgrade the host.
@@ -130,8 +130,8 @@ upgrade_system() {
     else
         info "Updating regular Tumbleweed..."
 
-        zypper --non-interactive refresh
-        zypper --non-interactive dup
+        zypper refresh
+        zypper dup
     fi
 }
 
