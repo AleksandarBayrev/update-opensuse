@@ -116,7 +116,7 @@ check_system() {
     zypper refresh
 
     info "Checking distribution updates..."
-    yes n | zypper dup --dry-run --details
+    zypper dup --non-interactive --dry-run --details
 }
 
 # Upgrade the host.
