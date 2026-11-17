@@ -126,7 +126,7 @@ upgrade_system() {
 
         # Continue from the default snapshot so already-staged
         # changes are retained if a reboot is still pending.
-        transactional-update --continue dup --auto-agree-with-licenses
+        transactional-update --continue -i dup
     else
         info "Updating regular Tumbleweed..."
 
