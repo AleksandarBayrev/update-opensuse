@@ -126,12 +126,12 @@ upgrade_system() {
 
         # Continue from the default snapshot so already-staged
         # changes are retained if a reboot is still pending.
-        transactional-update --continue dup
+        transactional-update --continue dup --auto-agree-with-licenses
     else
         info "Updating regular Tumbleweed..."
 
         zypper refresh
-        zypper dup
+        zypper dup --auto-agree-with-licenses
     fi
 }
 
