@@ -24,11 +24,16 @@ info() {
 }
 
 # Validate arguments.
-[[ $# -eq 1 ]] || usage
+if [[ $# -ne 1 ]]; then
+    usage
+fi
 
 COMMAND="$1"
 
-[[ "$COMMAND" == "check" || "$COMMAND" == "upgrade" ]] || usage
+case "$COMMAND" in
+    check|upgrade) ;;
+    *) usage ;;
+esac
 
 # Require root privileges.
 if [[ "$(id -u)" -ne 0 ]]; then
@@ -36,7 +41,9 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 # Identify distribution.
-[[ -f /etc/os-release ]] || error "Cannot identify distribution."
+if [[ ! -f /etc/os-release ]]; then
+    error "Cannot identify distribution."
+fi
 
 source /etc/os-release
 
@@ -65,12 +72,14 @@ elif command -v transactional-update >/dev/null 2>&1; then
 fi
 
 if [[ "$IS_TRANSACTIONAL" == true ]]; then
-    command -v transactional-update >/dev/null 2>&1 ||
+    if ! command -v transactional-update >/dev/null 2>&1; then
         error "transactional-update is not installed."
+    fi
 fi
 
-command -v zypper >/dev/null 2>&1 ||
+if ! command -v zypper >/dev/null 2>&1; then
     error "zypper is not installed."
+fi
 
 # Identify the user who invoked sudo.
 FLATPAK_USER="${SUDO_USER:-}"
@@ -86,20 +95,36 @@ user_flatpak() {
 
 # Check both Flatpak installation scopes.
 check_flatpaks() {
-    command -v flatpak >/dev/null 2>&1 || return 0
+    if ! command -v flatpak >/dev/null 2>&1; then
+        return 0
+    fi
 
     info "Checking system-wide Flatpak updates..."
-    flatpak --system remote-ls --updates
+    local sys_updates
+    sys_updates=$(flatpak --system remote-ls --updates)
+    if [[ -n "$sys_updates" ]]; then
+        echo "$sys_updates"
+    else
+        echo "No system-wide Flatpak updates available."
+    fi
 
     if [[ -n "$FLATPAK_USER" ]]; then
         info "Checking Flatpak updates for $FLATPAK_USER..."
-        user_flatpak remote-ls --updates
+        local user_updates
+        user_updates=$(user_flatpak remote-ls --updates)
+        if [[ -n "$user_updates" ]]; then
+            echo "$user_updates"
+        else
+            echo "No user Flatpak updates available."
+        fi
     fi
 }
 
 # Upgrade both Flatpak installation scopes.
 upgrade_flatpaks() {
-    command -v flatpak >/dev/null 2>&1 || return 0
+    if ! command -v flatpak >/dev/null 2>&1; then
+        return 0
+    fi
 
     info "Updating system-wide Flatpaks..."
     flatpak --system update -y
@@ -116,22 +141,134 @@ check_system() {
     zypper refresh
 
     info "Checking distribution updates..."
-    zypper --non-interactive dup --dry-run --details --auto-agree-with-licenses
+    local rc=0
+    if ! zypper --non-interactive dup --dry-run --details --auto-agree-with-licenses; then
+        rc=$?
+    fi
+
+    # 0 = no updates, 100 = updates available (ZYPPER_EXIT_INF_UPDATE_NEEDED)
+    if [[ "$rc" -ne 0 && "$rc" -ne 100 ]]; then
+        error "zypper dry-run failed with exit code $rc."
+    fi
 }
 
 # Upgrade the host.
 upgrade_system() {
-    if [[ "$IS_TRANSACTIONAL" == true ]]; then
-        info "Updating transactional system..."
+    if command -v dkms >/dev/null 2>&1; then
 
-        # Continue from the default snapshot so already-staged
-        # changes are retained if a reboot is still pending.
-        transactional-update --continue -i dup
+        if [[ "$IS_TRANSACTIONAL" == true ]]; then
+            info "Updating transactional system with DKMS..."
+
+            if ! transactional-update --continue run bash -c '
+                set -Eeuo pipefail
+
+                trap '\''rc=$?; echo >&2; echo "TRANSACTION ERROR: Command failed at line ${LINENO}: ${BASH_COMMAND} (exit code: ${rc})" >&2; exit "$rc"'\'' ERR
+
+                echo ""
+                echo "==> Refreshing repository metadata..."
+                zypper refresh
+
+                echo ""
+                echo "==> Upgrading the distribution..."
+                zypper dup --auto-agree-with-licenses
+
+                echo ""
+                echo "==> Detecting target kernel..."
+
+                KERNEL_VERSION=$(
+                    find /usr/lib/modules \
+                        -mindepth 1 \
+                        -maxdepth 1 \
+                        -type d \
+                        -printf "%f\n" |
+                    sort -V |
+                    tail -n 1
+                )
+
+                if [[ -z "$KERNEL_VERSION" ]]; then
+                    echo "ERROR: Could not determine the target kernel version." >&2
+                    exit 1
+                fi
+
+                echo "Target kernel: $KERNEL_VERSION"
+
+                echo ""
+                echo "==> Checking kernel development files..."
+
+                if [[ ! -e "/usr/lib/modules/$KERNEL_VERSION/build" ]]; then
+                    echo "ERROR: Kernel development files are missing for $KERNEL_VERSION." >&2
+                    exit 1
+                fi
+
+                echo ""
+                echo "==> Rebuilding DKMS modules..."
+
+                dkms autoinstall --kernelver "$KERNEL_VERSION"
+
+                echo ""
+                echo "==> DKMS status..."
+                dkms status
+
+                echo ""
+                echo "==> DKMS rebuild completed successfully."
+            '; then
+                error "Transactional upgrade or DKMS rebuild failed. Review the error output above."
+            fi
+
+        else
+            info "Updating regular Tumbleweed with DKMS..."
+
+            zypper refresh
+            zypper dup --auto-agree-with-licenses
+
+            info "Detecting target kernel..."
+
+            KERNEL_VERSION=$(
+                find /usr/lib/modules \
+                    -mindepth 1 \
+                    -maxdepth 1 \
+                    -type d \
+                    -printf "%f\n" |
+                sort -V |
+                tail -n 1
+            )
+
+            if [[ -z "$KERNEL_VERSION" ]]; then
+                error "Could not determine the target kernel version."
+            fi
+
+            echo "Target kernel: $KERNEL_VERSION"
+
+            info "Checking kernel development files..."
+
+            if [[ ! -e "/usr/lib/modules/$KERNEL_VERSION/build" ]]; then
+                error "Kernel development files are missing for $KERNEL_VERSION."
+            fi
+
+            info "Rebuilding DKMS modules..."
+
+            dkms autoinstall --kernelver "$KERNEL_VERSION"
+
+            info "DKMS status..."
+            dkms status
+
+            info "DKMS rebuild completed successfully."
+        fi
+
     else
-        info "Updating regular Tumbleweed..."
+        # Original upgrade logic — unchanged when DKMS is not installed.
+        if [[ "$IS_TRANSACTIONAL" == true ]]; then
+            info "Updating transactional system..."
 
-        zypper refresh
-        zypper dup --auto-agree-with-licenses
+            # Continue from the default snapshot so already-staged
+            # changes are retained if a reboot is still pending.
+            transactional-update --continue -i dup
+        else
+            info "Updating regular Tumbleweed..."
+
+            zypper refresh
+            zypper dup --auto-agree-with-licenses
+        fi
     fi
 }
 
